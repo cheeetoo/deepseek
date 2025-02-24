@@ -18,9 +18,10 @@ def precompute_freqs_cis(cfg: Config) -> Array:
 
 
 def rope(h: Array, freqs_cis: Array) -> Array:
-    real, imag = jnp.split(h, 2, -1)
+    dtype = h.dtype
+    real, imag = jnp.split(h.astype(jnp.float32), 2, -1)
     res = (real + 1j * imag) * freqs_cis
-    return jnp.concat((res.real, res.imag), axis=-1)
+    return jnp.concat((res.real, res.imag), axis=-1).astype(dtype)
 
 
 class MLA(eqx.Module):
@@ -71,7 +72,8 @@ class MLA(eqx.Module):
         k = jnp.concat((k_c, k_r), axis=-1)
 
         logits = einsum(q, k, "b nh t d, b nh l d -> b nh t l")
-        scores = jax.nn.softmax(logits / jnp.sqrt(self.dh + self.drh) + mask, -1)
+        logits = logits / jnp.sqrt(self.dh + self.drh) + mask
+        scores = jax.nn.softmax(logits.astype(jnp.float32), -1).astype(h.dtype)
 
         out = einsum(scores, v_c, "b nh t l, b nh t dh -> b nh l dh")
 
@@ -91,7 +93,7 @@ class Gate(eqx.Module):
         self.n_experts = cfg.n_routed_experts
 
         self.w = init(key, (cfg.n_routed_experts, cfg.dim))
-        self.gate_b = jnp.zeros(cfg.n_routed_experts)
+        self.gate_b = jnp.zeros(cfg.n_routed_experts, jnp.bfloat16)
 
     def __call__(self, x: Array) -> tuple[Array, Array, Array]:
         logits = einsum(self.w, x, "ne d, b t d -> b t ne")
@@ -160,9 +162,9 @@ class RMSNorm(eqx.Module):
     def __call__(self, x: Array) -> Array:
         return (
             self.w
-            * x
+            * x.astype(jnp.float32)
             * jax.lax.rsqrt(jnp.mean(x * x, axis=-1, keepdims=True) + self.eps)
-        )
+        ).astype(x.dtype)
 
 
 class Block(eqx.Module):

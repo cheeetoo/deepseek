@@ -1,4 +1,5 @@
 from functools import partial
+import time
 
 import jax
 import jax.numpy as jnp
@@ -37,7 +38,7 @@ cfg = Config(
 )
 
 
-model = Transformer(cfg, jax.random.PRNGKey(23))
+model = Transformer(cfg, jax.random.PRNGKey(0))
 model = shard_model(model)
 
 model_shardings = jax.tree.map(lambda x: x.sharding, model)
@@ -127,5 +128,13 @@ STEPS = 3
 for t in range(1, STEPS - 1):
     x, y = loader.next_batch()
     x = jax.device_put(x, inp_sharding)
+
+    st = time.monotonic()
     model, m, v, loss = train_step(model, m, v, x, y, t)
-    print(loss)
+    et = time.monotonic() - st
+
+    if (t - 1) % 10 == 0:
+        compiled = train_step.lower(model, m, v, x, y, t).compile()
+        tflops = compiled.cost_analysis()[0]["flops"] / (et * 1e12)  # type: ignore
+        mfu = tflops / 492
+        print(loss, mfu)

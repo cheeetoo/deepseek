@@ -6,8 +6,8 @@ import jax.numpy as jnp
 import numpy as np
 
 
-def init(key: jax.Array, shape: tuple[int, ...]) -> jax.Array:
-    return 0.006 * jax.random.normal(key, shape)
+def init(key: jax.Array, shape: tuple[int, ...], dtype=jnp.bfloat16) -> jax.Array:
+    return 0.006 * jax.random.normal(key, shape, dtype)
 
 
 @dataclass
