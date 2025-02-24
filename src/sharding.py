@@ -22,7 +22,10 @@ def get_partition(path: tuple[GetAttrKey, ...]) -> P:
             return P(None, AxisNames.tp)
         case "w":
             if "norm" in path[-2].name:
-                return P(None, None)
+                if len(path) == 2:
+                    return P(None)
+                else:
+                    return P(None, None)
             else:
                 return P(None, None, AxisNames.tp)
         case "w_dkv":
@@ -65,5 +68,5 @@ def get_partition(path: tuple[GetAttrKey, ...]) -> P:
 
 def shard_model(model):
     return jax.tree_util.tree_map_with_path(
-        lambda p, v: jax.device_put(p, NamedSharding(mesh, get_partition(v))), model
+        lambda p, v: jax.device_put(v, NamedSharding(mesh, get_partition(p))), model
     )

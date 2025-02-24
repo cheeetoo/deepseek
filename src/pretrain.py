@@ -10,36 +10,39 @@ from einops import rearrange, reduce
 
 from model import Transformer, precompute_freqs_cis
 
-from sharding import shard_model, mesh
+from sharding import shard_model, mesh, get_partition
 from sharding import AxisNames
 from utils import Config, DataLoader, adamw, get_adamw_state
 
 # TODO: set real values for run
 cfg = Config(
-    dim=4,
-    dc=2,
-    dim_head=2,
-    dim_rope_head=2,
-    n_heads=4,
-    moe_inter_dim=8,
+    dim=512,
+    dc=128,
+    dim_head=64,
+    dim_rope_head=32,
+    n_heads=16,
+    moe_inter_dim=256,
     n_shared_experts=1,
-    n_routed_experts=8,
-    n_activated_experts=2,
-    max_seqlen=4,
-    rope_theta=4000,
+    n_routed_experts=64,
+    n_activated_experts=8,
+    max_seqlen=512,
+    rope_theta=10_000,
     eps=1e-6,
     n_vocab=50257,
-    n_blocks=4,
-    n_mtp=2,
-    batch_size=2,
-    mtp_lambda=0.001,
+    n_blocks=1,
+    n_mtp=1,
+    batch_size=8,
+    mtp_lambda=0.3,
     bias_update_rate=0.001,
-    aux_alpha=0.001,
+    aux_alpha=0.0001,
 )
 
 
 model = Transformer(cfg, jax.random.PRNGKey(0))
+print("made model")
+jax.tree_util.tree_map_with_path(lambda p, v: print(p, get_partition(p)), model)
 model = shard_model(model)
+print("sharded model")
 
 model_shardings = jax.tree.map(lambda x: x.sharding, model)
 inp_sharding = NamedSharding(mesh, P(AxisNames.dp, None))
@@ -47,18 +50,23 @@ inp_sharding = NamedSharding(mesh, P(AxisNames.dp, None))
 m, v = get_adamw_state(model)
 
 freqs_cis = precompute_freqs_cis(cfg)
-mask = jnp.triu(jnp.full((cfg.max_seqlen, cfg.max_seqlen), -jnp.inf), k=1)
+mask = jnp.triu(
+    jnp.full((cfg.max_seqlen, cfg.max_seqlen), -jnp.inf, dtype=jnp.bfloat16), k=1
+)
 
 gate_b_filter_spec = jax.tree_util.tree_map_with_path(
     lambda p, _: p[-1].name != "gate_b", model
 )
 
+print("got other things")
 loader = DataLoader(
     "./data/tinyshakespeare/tiny_shakespeare_train.bin",
     cfg.batch_size,
     cfg.max_seqlen,
     cfg.n_mtp,
 )
+
+print("loaded data")
 
 
 @partial(jax.value_and_grad, has_aux=True)
@@ -79,7 +87,7 @@ def loss_fn(model: Transformer, x: Array, y: Array):
         rearrange(indices, "gates b t topk -> (gates b t) topk")
     )
     toks_per_expert = reduce(
-        toks_per_expert.astype(float),
+        toks_per_expert.astype(jnp.bfloat16),
         "(gates b t) ne -> gates ne",
         "mean",
         gates=cfg.n_blocks + cfg.n_mtp,
@@ -123,9 +131,10 @@ def train_step(model, m, v, x, y, t):
     return model, m, v, loss
 
 
-STEPS = 3
+STEPS = 5
 
 for t in range(1, STEPS - 1):
+    print(f"step {t}")
     x, y = loader.next_batch()
     x = jax.device_put(x, inp_sharding)
 
@@ -135,6 +144,6 @@ for t in range(1, STEPS - 1):
 
     if (t - 1) % 10 == 0:
         compiled = train_step.lower(model, m, v, x, y, t).compile()
-        tflops = compiled.cost_analysis()[0]["flops"] / (et * 1e12)  # type: ignore
+        tflops = compiled.cost_analysis()["flops"] / (et * 1e12)  # type: ignore
         mfu = tflops / 492
         print(loss, mfu)

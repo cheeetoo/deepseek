@@ -22,11 +22,9 @@ connection and computer. The .bin files are raw byte
 streams of uint16 (gpt-2) or uint32 (llama) numbers indicating the token ids.
 """
 
-import argparse
 import os
 
 import tiktoken
-from transformers import AutoTokenizer
 
 from data_common import download_file, write_datafile
 
@@ -47,21 +45,10 @@ def download():
         print(f"{data_filename} already exists, skipping download...")
 
 
-def tokenize(model_desc):
-    if model_desc == "gpt-2":
-        enc = tiktoken.get_encoding("gpt2")
-        encode = lambda s: enc.encode_ordinary(s)
-        eot = enc._special_tokens["<|endoftext|>"]  # end of text token
-    elif model_desc == "llama-3":
-        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3.1-8B")
-        encode = lambda s: tokenizer.encode(
-            s, add_special_tokens=False, verbose=False, split_special_tokens=True
-        )
-        eot = tokenizer.encode("")[
-            0
-        ]  # by default the tokenizer adds the EOT token (128000)
-    else:
-        raise ValueError(f"unknown model descriptor {model_desc}")
+def tokenize():
+    enc = tiktoken.get_encoding("gpt2")
+    encode = lambda s: enc.encode_ordinary(s)
+    eot = enc._special_tokens["<|endoftext|>"]  # end of text token
     data_filename = os.path.join(DATA_CACHE_DIR, "tiny_shakespeare.txt")
     text = open(data_filename, "r").read()
     # let's treat every individual chunk of text as a separate "document"
@@ -80,22 +67,10 @@ def tokenize(model_desc):
     # save to file
     val_filename = os.path.join(DATA_CACHE_DIR, "tiny_shakespeare_val.bin")
     train_filename = os.path.join(DATA_CACHE_DIR, "tiny_shakespeare_train.bin")
-    write_datafile(val_filename, val_tokens, model_desc)
-    write_datafile(train_filename, train_tokens, model_desc)
+    write_datafile(val_filename, val_tokens)
+    write_datafile(train_filename, train_tokens)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Tiny Shakespeare dataset preprocessing"
-    )
-    parser.add_argument(
-        "-m",
-        "--model_desc",
-        type=str,
-        default="gpt-2",
-        choices=["gpt-2", "llama-3"],
-        help="Model type, gpt-2|llama-3",
-    )
-    args = parser.parse_args()
     download()
-    tokenize(args.model_desc)
+    tokenize()
