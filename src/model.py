@@ -68,7 +68,7 @@ class MLA(eqx.Module):
         k_r = rope(einsum(self.w_kr, h, "drh d, b t d -> b t drh"), freqs_cis)
 
         q = jnp.concat((q_c, q_r), axis=-1)
-        k_r = repeat(k_r, "b t drh -> b nh t drh", nh=self.nh)
+        k_r = repeat(k_r, "b t drh -> b nh t drh", nh=self.nh) / self.nh
         k = jnp.concat((k_c, k_r), axis=-1)
 
         logits = einsum(q, k, "b nh t d, b nh l d -> b nh t l")
