@@ -2,7 +2,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.nn as nn
-from einops import einsum, rearrange, repeat
+from einops import einsum, rearrange, reduce, repeat
 from jax import Array
 
 from utils import Config, init
@@ -142,13 +142,9 @@ class FFN(eqx.Module):
             * swiglu(x, self.w1_routed[i], self.w2_routed[i], self.w3_routed[i])
         )(indices, weights, x_flat)  # (b t ne) 1 d
 
-        out = rearrange(
-            out, "(b t ne) d -> b t ne d", b=B, t=T, ne=self.n_activated_experts
-        )
+        out = reduce(out, "(b t ne) d -> b t d", b=B, t=T, reduction="sum")
 
-        out = jnp.sum(out, 2) + swiglu(
-            x, self.w1_shared, self.w2_shared, self.w3_shared
-        )
+        out += swiglu(x, self.w1_shared, self.w2_shared, self.w3_shared)
 
         return out, affinities
 

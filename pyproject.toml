@@ -16,3 +16,6 @@ cpu = [
 tpu = [
     "jax[tpu]>=0.5.0",
 ]
+
+[tool.uv]
+prerelease = "allow"

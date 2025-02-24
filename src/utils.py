@@ -34,8 +34,9 @@ class Config:
 
 
 def get_adamw_state(params):
-    m = jax.tree.map(jnp.zeros_like, params)
-    v = jax.tree.map(jnp.zeros_like, params)
+    zeros_like = lambda p: jnp.zeros_like(p, p.dtype, device=p.device)
+    m = jax.tree.map(zeros_like, params)
+    v = jax.tree.map(zeros_like, params)
     return m, v
 
 

@@ -3,10 +3,14 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from jax import Array
+from jax.sharding import NamedSharding, PartitionSpec as P
 import equinox as eqx
 from einops import rearrange, reduce
 
 from model import Transformer, precompute_freqs_cis
+
+from sharding import shard_model, mesh
+from sharding import AxisNames
 from utils import Config, DataLoader, adamw, get_adamw_state
 
 # TODO: set real values for run
@@ -34,7 +38,13 @@ cfg = Config(
 
 
 model = Transformer(cfg, jax.random.PRNGKey(23))
+model = shard_model(model)
+
+model_shardings = jax.tree.map(lambda x: x.sharding, model)
+inp_sharding = NamedSharding(mesh, P(AxisNames.dp, None))
+
 m, v = get_adamw_state(model)
+
 freqs_cis = precompute_freqs_cis(cfg)
 mask = jnp.triu(jnp.full((cfg.max_seqlen, cfg.max_seqlen), -jnp.inf), k=1)
 
@@ -78,12 +88,22 @@ def loss_fn(model: Transformer, x: Array, y: Array):
     f = (cfg.n_routed_experts / cfg.n_activated_experts) * toks_per_expert
 
     aux_loss = cfg.aux_alpha * jnp.sum(f * p)
-    jax.debug.print("ce {l_mpt} aux {aux}", l_mpt=l_ce, aux=aux_loss)
 
     return l_ce + aux_loss, toks_per_expert
 
 
-# @jax.jit
+@partial(
+    jax.jit,
+    in_shardings=(  # type: ignore
+        model_shardings,
+        model_shardings,
+        model_shardings,
+        inp_sharding,
+        None,
+        None,
+    ),
+    out_shardings=(model_shardings, model_shardings, model_shardings, None),  # type: ignore
+)
 def train_step(model, m, v, x, y, t):
     (loss, toks_per_expert), grads = loss_fn(model, x, y)
 
@@ -106,5 +126,6 @@ STEPS = 3
 
 for t in range(1, STEPS - 1):
     x, y = loader.next_batch()
+    x = jax.device_put(x, inp_sharding)
     model, m, v, loss = train_step(model, m, v, x, y, t)
     print(loss)
