@@ -125,8 +125,6 @@ def train_step(model, m, v, x, y, t):
 
 STEPS = 10_000
 
-logdir = "/tmp/jax_profile"
-
 running_loss = 0
 running_times = 0
 tflops = None
@@ -137,11 +135,7 @@ for t in range(0, STEPS):
     x = jax.device_put(x, inp_sharding)
 
     st = time.monotonic()
-    if t == 7:
-        jax.profiler.start_trace(logdir, create_perfetto_link=True)
     model, m, v, loss = train_step(model, m, v, x, y, t + 1)
-    if t == 7:
-        jax.profiler.stop_trace()
     et = time.monotonic() - st
 
     running_loss += loss
