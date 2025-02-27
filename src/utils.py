@@ -14,7 +14,7 @@ def init(key: jax.Array, shape: tuple[int, ...], dtype=jnp.bfloat16) -> jax.Arra
 class Config:
     dim: int
     dc: int
-    dim_head: int
+    dim_nope_head: int
     dim_rope_head: int
     n_heads: int
     moe_inter_dim: int

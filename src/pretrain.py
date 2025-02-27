@@ -10,39 +10,35 @@ from einops import rearrange, reduce
 
 from model import Transformer, precompute_freqs_cis
 
-from sharding import shard_model, mesh, get_partition
+from sharding import shard_model, mesh
 from sharding import AxisNames
 from utils import Config, DataLoader, adamw, get_adamw_state
 
-# TODO: set real values for run
 cfg = Config(
-    dim=512,
-    dc=128,
-    dim_head=64,
+    dim=1024,
+    dc=512,
+    dim_nope_head=64,
     dim_rope_head=32,
-    n_heads=16,
-    moe_inter_dim=256,
-    n_shared_experts=1,
+    n_heads=8,
+    moe_inter_dim=768,
+    n_shared_experts=2,
     n_routed_experts=64,
-    n_activated_experts=8,
-    max_seqlen=512,
+    n_activated_experts=4,
+    max_seqlen=64,
     rope_theta=10_000,
     eps=1e-6,
-    n_vocab=50257,
-    n_blocks=1,
+    n_vocab=50260,
+    n_blocks=5,
     n_mtp=1,
-    batch_size=8,
+    batch_size=64,
     mtp_lambda=0.3,
     bias_update_rate=0.001,
     aux_alpha=0.0001,
 )
 
-
-model = Transformer(cfg, jax.random.PRNGKey(0))
-print("made model")
-jax.tree_util.tree_map_with_path(lambda p, v: print(p, get_partition(p)), model)
+with jax.default_device(jax.devices("cpu")[0]):
+    model = Transformer(cfg, jax.random.PRNGKey(0))
 model = shard_model(model)
-print("sharded model")
 
 model_shardings = jax.tree.map(lambda x: x.sharding, model)
 inp_sharding = NamedSharding(mesh, P(AxisNames.dp, None))
@@ -58,15 +54,12 @@ gate_b_filter_spec = jax.tree_util.tree_map_with_path(
     lambda p, _: p[-1].name != "gate_b", model
 )
 
-print("got other things")
 loader = DataLoader(
-    "./data/tinyshakespeare/tiny_shakespeare_train.bin",
+    "./data/edu_fineweb10B/edu_fineweb_train_00000*",
     cfg.batch_size,
     cfg.max_seqlen,
     cfg.n_mtp,
 )
-
-print("loaded data")
 
 
 @partial(jax.value_and_grad, has_aux=True)
@@ -95,7 +88,6 @@ def loss_fn(model: Transformer, x: Array, y: Array):
     )
 
     f = (cfg.n_routed_experts / cfg.n_activated_experts) * toks_per_expert
-
     aux_loss = cfg.aux_alpha * jnp.sum(f * p)
 
     return l_ce + aux_loss, toks_per_expert
@@ -131,19 +123,38 @@ def train_step(model, m, v, x, y, t):
     return model, m, v, loss
 
 
-STEPS = 5
+STEPS = 10_000
 
-for t in range(1, STEPS - 1):
+logdir = "/tmp/jax_profile"
+
+running_loss = 0
+running_times = 0
+tflops = None
+
+for t in range(0, STEPS):
     print(f"step {t}")
     x, y = loader.next_batch()
     x = jax.device_put(x, inp_sharding)
 
     st = time.monotonic()
-    model, m, v, loss = train_step(model, m, v, x, y, t)
+    if t == 7:
+        jax.profiler.start_trace(logdir, create_perfetto_link=True)
+    model, m, v, loss = train_step(model, m, v, x, y, t + 1)
+    if t == 7:
+        jax.profiler.stop_trace()
     et = time.monotonic() - st
 
-    if (t - 1) % 10 == 0:
-        compiled = train_step.lower(model, m, v, x, y, t).compile()
-        tflops = compiled.cost_analysis()["flops"] / (et * 1e12)  # type: ignore
-        mfu = tflops / 492
-        print(loss, mfu)
+    running_loss += loss
+    running_times += et
+    if t % 10 == 0:
+        if tflops is None:
+            compiled = train_step.lower(model, m, v, x, y, t).compile()
+            tflops = compiled.cost_analysis()["flops"] / 1e12  # type: ignore
+
+        avg_time = running_times / 10
+        achieved_tflops = tflops / avg_time
+        mfu = (achieved_tflops / 492) * 100
+
+        print(f"Loss: {running_loss / 10}, MFU: {mfu:.4f}%")
+        running_loss = 0
+        running_times = 0

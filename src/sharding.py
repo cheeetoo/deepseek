@@ -19,7 +19,7 @@ def get_partition(path: tuple[GetAttrKey, ...]) -> P:
 
     match name:
         case "tok_emb":
-            return P(None, AxisNames.tp)
+            return P(AxisNames.tp, None)
         case "w":
             if "norm" in path[-2].name:
                 if len(path) == 2:
@@ -29,25 +29,25 @@ def get_partition(path: tuple[GetAttrKey, ...]) -> P:
             else:
                 return P(None, None, AxisNames.tp)
         case "w_dkv":
-            return P(None, AxisNames.tp, None)
+            return P(None, None, AxisNames.tp)
         case "w_uk":
             return P(None, None, AxisNames.tp, None)
         case "w_uv":
             return P(None, None, AxisNames.tp, None)
         case "w_dq":
-            return P(None, AxisNames.tp, None)
+            return P(None, None, AxisNames.tp)
         case "w_uq":
             return P(None, None, AxisNames.tp, None)
         case "w_qr":
             return P(None, None, AxisNames.tp, None)
         case "w_kr":
-            return P(None, AxisNames.tp, None)
+            return P(None, None, AxisNames.tp)
         case "w_o":
-            return P(None, AxisNames.tp, None, None)
+            return P(None, None, None, AxisNames.tp)
         case "w1_shared":
             return P(None, None, AxisNames.tp)
         case "w2_shared":
-            return P(None, None, AxisNames.tp)
+            return P(None, AxisNames.tp, None)
         case "w3_shared":
             return P(None, None, AxisNames.tp)
         case "w1_routed":

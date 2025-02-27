@@ -40,7 +40,7 @@ class MLA(eqx.Module):
 
     def __init__(self, cfg: Config, key: Array):
         self.nh = cfg.n_heads
-        self.dh = cfg.dim_head
+        self.dh = cfg.dim_nope_head
         self.drh = cfg.dim_rope_head
 
         key_dkv, key_uk, key_uv, key_dq, key_uq, key_qr, key_kr, key_wo = (
@@ -48,13 +48,13 @@ class MLA(eqx.Module):
         )
 
         self.w_dkv = init(key_dkv, (cfg.dc, cfg.dim))
-        self.w_uk = init(key_uk, (cfg.dim_head, cfg.n_heads, cfg.dc))
-        self.w_uv = init(key_uv, (cfg.dim_head, cfg.n_heads, cfg.dc))
+        self.w_uk = init(key_uk, (cfg.dim_nope_head, cfg.n_heads, cfg.dc))
+        self.w_uv = init(key_uv, (cfg.dim_nope_head, cfg.n_heads, cfg.dc))
         self.w_dq = init(key_dq, (cfg.dc, cfg.dim))
-        self.w_uq = init(key_uq, (cfg.dim_head, cfg.n_heads, cfg.dc))
+        self.w_uq = init(key_uq, (cfg.dim_nope_head, cfg.n_heads, cfg.dc))
         self.w_qr = init(key_qr, (cfg.dim_rope_head, cfg.n_heads, cfg.dc))
         self.w_kr = init(key_kr, (cfg.dim_rope_head, cfg.dim))
-        self.w_o = init(key_wo, (cfg.dim, cfg.dim_head, cfg.n_heads))
+        self.w_o = init(key_wo, (cfg.dim, cfg.dim_nope_head, cfg.n_heads))
 
     def __call__(self, h: Array, freqs_cis: Array, mask: Array):
         c_kv = einsum(self.w_dkv, h, "dc d, b t d -> b t dc")
@@ -131,24 +131,23 @@ class FFN(eqx.Module):
         self.gate = Gate(cfg, key7)
 
     def __call__(self, x: Array) -> tuple[Array, Array]:
-        B, T, _ = x.shape
-
         weights, indices, affinities = self.gate(x)
-        weights = rearrange(weights, "b t tk -> (b t tk)")
-        indices = rearrange(indices, "b t tk -> (b t tk)")
 
-        x_flat = repeat(x, "b t d -> (b t ne) d", ne=self.n_activated_experts)
+        shared_out = swiglu(x, self.w1_shared, self.w2_shared, self.w3_shared)
 
-        out = jax.vmap(
-            lambda i, w, x: w
-            * swiglu(x, self.w1_routed[i], self.w2_routed[i], self.w3_routed[i])
-        )(indices, weights, x_flat)  # (b t ne) 1 d
+        one_hot = jax.nn.one_hot(indices, self.w1_routed.shape[0], dtype=x.dtype)
+        router_probs = weights[..., None] * one_hot
+        router_probs = reduce(router_probs, "b t na ne -> b t ne", "sum")
 
-        out = reduce(out, "(b t ne) d -> b t d", b=B, t=T, reduction="sum")
+        h1 = einsum(x, self.w1_routed, "b t d, ne d c -> b t ne c")
+        h2 = einsum(x, self.w3_routed, "b t d, ne d c -> b t ne c")
+        h3 = nn.silu(h1 * h2)
 
-        out += swiglu(x, self.w1_shared, self.w2_shared, self.w3_shared)
+        experts_out = einsum(h3, self.w2_routed, "b t e h, e h d -> b t e d")
 
-        return out, affinities
+        routed_out = einsum(experts_out, router_probs, "b t e d, b t e -> b t d")
+
+        return shared_out + routed_out, affinities
 
 
 class RMSNorm(eqx.Module):
@@ -230,7 +229,7 @@ class Transformer(eqx.Module):
     def __call__(
         self, toks: Array, freqs_cis: Array, mask: Array
     ) -> tuple[Array, Array]:
-        emb = self.tok_emb[toks]
+        emb = jnp.take(self.tok_emb, toks, axis=0)
 
         def block_step(x: Array, block: Block) -> tuple[Array, Array]:
             x, affinities = block(x, freqs_cis, mask)
