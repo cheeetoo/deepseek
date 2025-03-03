@@ -1,3 +1,5 @@
+import math
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -5,10 +7,10 @@ import jax.nn as nn
 from einops import einsum, rearrange, reduce, repeat
 from jax import Array
 
-from utils import Config, init
+from utils import Config, InferenceConfig, init
 
 
-def precompute_freqs_cis(cfg: Config) -> Array:
+def precompute_rope_freqs_cis(cfg: Config) -> Array:
     dim = cfg.dim_rope_head
 
     freqs = 1.0 / (cfg.rope_theta ** (jnp.arange(0, dim, 2) / dim))
@@ -17,7 +19,43 @@ def precompute_freqs_cis(cfg: Config) -> Array:
     return jnp.exp(1j * freqs)
 
 
-def rope(h: Array, freqs_cis: Array) -> Array:
+def precompute_yarn_freqs_cis(cfg: Config) -> Array:
+    dim = cfg.dim_rope_head
+    inference_cfg: InferenceConfig = cfg.inference_cfg  # type: ignore
+    max_seqlen = inference_cfg.max_seqlen
+    beta_fast = inference_cfg.beta_fast
+    beta_slow = inference_cfg.beta_slow
+    factor = inference_cfg.rope_factor
+
+    def find_correction_dim(n_rots, dim, theta, max_seqlen):
+        return (
+            dim * math.log(max_seqlen / (n_rots * 2 * math.pi)) / (2 * math.log(theta))
+        )
+
+    def linear_ramp_factor(min, max, dim):
+        if min == max:
+            max += 0.001
+        linear_func = (jnp.arange(dim) - min) / (max - min)
+        return jax.lax.clamp(0.0, linear_func, 1.0)
+
+    freqs = 1.0 / (cfg.rope_theta ** (jnp.arange(0, dim, 2) / dim))
+
+    low = max(
+        math.floor(find_correction_dim(beta_fast, dim, cfg.rope_theta, cfg.max_seqlen)),
+        0,
+    )
+    high = max(
+        math.ceil(find_correction_dim(beta_slow, dim, cfg.rope_theta, cfg.max_seqlen)),
+        dim - 1,
+    )
+    smooth = 1 - linear_ramp_factor(low, high, dim // 2)
+    freqs = freqs / factor * (1 - smooth) + freqs * smooth
+    freqs = jnp.outer(jnp.arange(max_seqlen), freqs)
+
+    return jnp.exp(1j * freqs)
+
+
+def apply_rotary_emb(h: Array, freqs_cis: Array) -> Array:
     dtype = h.dtype
     real, imag = jnp.split(h.astype(jnp.float32), 2, -1)
     res = (real + 1j * imag) * freqs_cis
@@ -64,8 +102,12 @@ class MLA(eqx.Module):
         c_q = einsum(self.w_dq, h, "dc d, b t d -> b t dc")
         q_c = einsum(self.w_uq, c_q, "dh nh dc, b t dc -> b nh t dh")
 
-        q_r = rope(einsum(self.w_qr, c_q, "drh nh dc, b t dc -> b nh t drh"), freqs_cis)
-        k_r = rope(einsum(self.w_kr, h, "drh d, b t d -> b t drh"), freqs_cis)
+        q_r = apply_rotary_emb(
+            einsum(self.w_qr, c_q, "drh nh dc, b t dc -> b nh t drh"), freqs_cis
+        )
+        k_r = apply_rotary_emb(
+            einsum(self.w_kr, h, "drh d, b t d -> b t drh"), freqs_cis
+        )
 
         q = jnp.concat((q_c, q_r), axis=-1)
         k_r = repeat(k_r, "b t drh -> b nh t drh", nh=self.nh) / self.nh

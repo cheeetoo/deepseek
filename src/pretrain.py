@@ -9,7 +9,7 @@ from jax.sharding import NamedSharding, PartitionSpec as P
 import equinox as eqx
 from einops import rearrange, reduce
 
-from model import Transformer, precompute_freqs_cis
+from model import Transformer, precompute_rope_freqs_cis
 
 from sharding import shard_model, mesh
 from sharding import AxisNames
@@ -107,6 +107,7 @@ cfg = Config(
     mtp_lambda=args.mtp_lambda,
     bias_update_rate=args.bias_update_rate,
     aux_alpha=args.aux_alpha,
+    inference_cfg=None,
 )
 
 with jax.default_device(jax.devices("cpu")[0]):
@@ -118,7 +119,7 @@ inp_sharding = NamedSharding(mesh, P(AxisNames.dp, None))
 
 m, v = get_adamw_state(model)
 
-freqs_cis = precompute_freqs_cis(cfg)
+freqs_cis = precompute_rope_freqs_cis(cfg)
 mask = jnp.triu(
     jnp.full((cfg.max_seqlen, cfg.max_seqlen), -jnp.inf, dtype=jnp.bfloat16), k=1
 )

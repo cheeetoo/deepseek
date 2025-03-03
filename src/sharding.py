@@ -66,7 +66,7 @@ def get_partition(path: tuple[GetAttrKey, ...]) -> P:
             raise ValueError(f"Unrecognized weight: {name}")
 
 
-def shard_model(model):
+def shard_model(model, partition_fn=get_partition):
     return jax.tree_util.tree_map_with_path(
-        lambda p, v: jax.device_put(v, NamedSharding(mesh, get_partition(p))), model
+        lambda p, v: jax.device_put(v, NamedSharding(mesh, partition_fn(p))), model
     )

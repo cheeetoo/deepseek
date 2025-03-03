@@ -11,6 +11,16 @@ def init(key: jax.Array, shape: tuple[int, ...], dtype=jnp.bfloat16) -> jax.Arra
 
 
 @dataclass
+class InferenceConfig:
+    max_seqlen: int
+    beta_fast: int
+    beta_slow: int
+    rope_factor: int
+    temperature: float
+    top_p: float
+
+
+@dataclass
 class Config:
     dim: int
     dc: int
@@ -31,6 +41,7 @@ class Config:
     mtp_lambda: float
     bias_update_rate: float
     aux_alpha: float
+    inference_cfg: None | InferenceConfig
 
 
 def get_adamw_state(params):
@@ -85,15 +96,15 @@ class DataLoader:
         self.T = T
         self.n_pred = n_mpt + 1
         self.files = sorted(glob.glob(filename_pattern))
-        assert (
-            len(self.files) > 0
-        ), f"Did not find any files that match the pattern {filename_pattern}"
+        assert len(self.files) > 0, (
+            f"Did not find any files that match the pattern {filename_pattern}"
+        )
         ntok_total = 0
         for fname in self.files:
             shard_ntok = _peek_data_shard(fname)
-            assert (
-                shard_ntok >= B * T + n_mpt
-            ), "Shard doesn't have enough tokens for one batch"
+            assert shard_ntok >= B * T + n_mpt, (
+                "Shard doesn't have enough tokens for one batch"
+            )
             ntok_total += shard_ntok
         self.ntok_total = ntok_total
         print(
