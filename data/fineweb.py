@@ -88,9 +88,9 @@ def tokenize_gpt2(doc):
     tokens = [eot]  # the special <|endoftext|> token delimits all documents
     tokens.extend(encode(doc["text"]))
     tokens_np = np.array(tokens)
-    assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), (
-        "token dictionary too large for uint16"
-    )
+    assert (0 <= tokens_np).all() and (
+        tokens_np < 2**16
+    ).all(), "token dictionary too large for uint16"
     tokens_np_uint = tokens_np.astype(np.uint16)
     return tokens_np_uint
 

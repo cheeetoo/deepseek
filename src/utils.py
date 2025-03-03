@@ -85,15 +85,15 @@ class DataLoader:
         self.T = T
         self.n_pred = n_mpt + 1
         self.files = sorted(glob.glob(filename_pattern))
-        assert len(self.files) > 0, (
-            f"Did not find any files that match the pattern {filename_pattern}"
-        )
+        assert (
+            len(self.files) > 0
+        ), f"Did not find any files that match the pattern {filename_pattern}"
         ntok_total = 0
         for fname in self.files:
             shard_ntok = _peek_data_shard(fname)
-            assert shard_ntok >= B * T + n_mpt, (
-                "Shard doesn't have enough tokens for one batch"
-            )
+            assert (
+                shard_ntok >= B * T + n_mpt
+            ), "Shard doesn't have enough tokens for one batch"
             ntok_total += shard_ntok
         self.ntok_total = ntok_total
         print(
