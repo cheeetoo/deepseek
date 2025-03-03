@@ -1,10 +1,11 @@
 import time
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import tiktoken
 
-from model import Transformer, precompute_yarn_freqs_cis
+from model import precompute_yarn_freqs_cis
+from model_inference import ITransformer, KVCache
 from utils import Config, InferenceConfig
 
 cfg = Config(
@@ -34,6 +35,7 @@ cfg = Config(
         rope_factor=40,
         temperature=0.6,
         top_p=0.9,
+        batch_size=1,
     ),
 )
 
@@ -41,14 +43,22 @@ enc = tiktoken.get_encoding("gpt2")
 
 MESSAGE = "TEST TEST TEST"
 
-model = Transformer(cfg, jax.random.PRNGKey(0))
+model = ITransformer(cfg, jax.random.PRNGKey(0))
 with jax.default_device(jax.devices("cpu")[0]):
-    model = Transformer(cfg, jax.random.PRNGKey(0))
+    model = ITransformer(cfg, jax.random.PRNGKey(0))
     model = eqx.tree_deserialise_leaves("./model.eqx", model)
 
+kvcache = KVCache.new(
+    cfg.n_blocks + cfg.n_mtp,
+    cfg.inference_cfg.batch_size,  # type: ignore
+    cfg.inference_cfg.max_seqlen,  # type: ignore
+    cfg.dim_rope_head,
+    cfg.dc,
+)
 freqs_cis = precompute_yarn_freqs_cis(cfg)
 
 tok_ids = jnp.array(enc.encode(MESSAGE)).reshape(1, -1)
+
 max_seqlen = cfg.inference_cfg.max_seqlen  # type: ignore
 mask = jnp.triu(jnp.full((max_seqlen, max_seqlen), -jnp.inf, dtype=jnp.bfloat16), k=1)
 
@@ -67,15 +77,20 @@ def sample_top_p(probs, p, key):
 
 def generate(tok_ids, gen_len) -> jax.Array:
     key = jax.random.PRNGKey(0)
+    cur_pos = 0
+
     for _ in range(gen_len):
-        n_toks = tok_ids.shape[-1]
+        n_toks = tok_ids.shape[-1] - cur_pos
         new_mask = mask[:n_toks, :n_toks]
         new_freqs_cis = freqs_cis[:n_toks, :]
-        logits, _ = model(tok_ids, new_freqs_cis, new_mask)
+        logits, kvcache = model(
+            tok_ids[:, cur_pos:], new_freqs_cis, new_mask, kvcache, cur_pos
+        )
         scores = jax.nn.softmax(logits[:, -1, 0, :] / cfg.inference_cfg.temperature, -1)  # type: ignore
         next_token = sample_top_p(scores, cfg.inference_cfg.top_p, key)  # type: ignore
         tok_ids = jnp.concat((tok_ids, next_token), axis=-1)
         key, _ = jax.random.split(key)
+        cur_pos += n_toks
     return tok_ids
 
 
@@ -83,7 +98,7 @@ st = time.time()
 generated_toks = generate(tok_ids, 20)
 et = time.time() - st
 
-toks_per_seconds = 20 / et
+toks_per_second = 20 / et
 print(f"{tok_ids.shape=} {generated_toks.shape=}")
 print("new toks: ", enc.decode(list(generated_toks.flatten())))
 print("tok/s: ", toks_per_second)
