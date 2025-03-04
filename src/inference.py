@@ -75,22 +75,87 @@ def sample_top_p(probs, p, key):
     return jnp.take_along_axis(idxs, sample, axis=-1)
 
 
+def get_nucleus(probs, p):
+    idxs = jnp.argsort(-probs, axis=-1)
+    sorted_probs = jnp.take_along_axis(probs, idxs, axis=-1)
+    mask = jnp.cumsum(sorted_probs, axis=-1) - sorted_probs > p
+    return idxs[..., ~mask]
+
+
+def is_in_nucleus(probs, p, token_id):
+    nucleus = get_nucleus(probs, p)
+    return jnp.any(nucleus == token_id[..., None], axis=-1)
+
+
+def find_first_mismatch(ref_probs, p, draft_tokens):
+    in_nucleus = is_in_nucleus(ref_probs, p, draft_tokens)
+    first_mismatch = jnp.argmax(~in_nucleus, axis=-1)
+    all_match = jnp.all(in_nucleus, axis=-1)
+    return jnp.where(all_match, draft_tokens.shape[-1], first_mismatch)
+
+
 def generate(tok_ids, gen_len, kvcache: KVCache) -> tuple[jax.Array, KVCache]:
+    start_toks = tok_ids.shape[-1]
     key = jax.random.PRNGKey(0)
     cur_pos = 0
+    n_mtp = cfg.n_mtp
+    top_p: float = cfg.inference_cfg.top_p  # type: ignore
 
-    for _ in range(gen_len):
+    while cur_pos < (gen_len + start_toks):
         n_toks = tok_ids.shape[-1] - cur_pos
-        new_mask = mask[:n_toks, :n_toks]
-        new_freqs_cis = freqs_cis[:n_toks, :]
+        new_mask = mask[:n_toks, : tok_ids.shape[-1]]
+        new_freqs_cis = freqs_cis[cur_pos : tok_ids.shape[-1], :]
+
         logits, kvcache = model(
             tok_ids[:, cur_pos:], new_freqs_cis, new_mask, kvcache, cur_pos
         )
-        scores = jax.nn.softmax(logits[:, -1, 0, :] / cfg.inference_cfg.temperature, -1)  # type: ignore
-        next_token = sample_top_p(scores, cfg.inference_cfg.top_p, key)  # type: ignore
-        tok_ids = jnp.concat((tok_ids, next_token), axis=-1)
-        key, _ = jax.random.split(key)
-        cur_pos += n_toks
+        scores = jax.nn.softmax(logits / cfg.inference_cfg.temperature, -1)  # type: ignore
+
+        draft_tokens = []
+        for i in range(n_mtp):
+            key, subkey = jax.random.split(key)
+            draft_token = sample_top_p(scores[:, -1, i, :], top_p, subkey)  # type: ignore
+            draft_tokens.append(draft_token)
+
+        draft_tokens_array = jnp.concatenate(
+            [t.reshape(cfg.inference_cfg.batch_size, -1) for t in draft_tokens], axis=-1
+        )
+        draft_ids = jnp.concatenate([tok_ids, draft_tokens_array], axis=-1)
+
+        verify_n_toks = draft_ids.shape[-1] - cur_pos
+        verify_mask = mask[:verify_n_toks, : draft_ids.shape[-1]]
+        verify_freqs_cis = freqs_cis[cur_pos : draft_ids.shape[-1], :]
+
+        ref_logits, kvcache = model(
+            draft_ids[:, cur_pos:], verify_freqs_cis, verify_mask, kvcache, cur_pos
+        )
+        ref_scores = jax.nn.softmax(ref_logits / cfg.inference_cfg.temperature, -1)[
+            :, :, 0, :
+        ]  # type: ignore
+
+        first_mismatch = find_first_mismatch(
+            ref_scores[:, :-1], top_p, draft_tokens_array[:, :-1]
+        )
+
+        accepted_tokens = jnp.concat(
+            (tok_ids, draft_tokens_array[:, :first_mismatch]), axis=-1
+        )
+
+        if first_mismatch < draft_tokens_array.shape[-1]:
+            key, subkey = jax.random.split(key)
+            mismatch_token = sample_top_p(ref_scores[:, first_mismatch], top_p, subkey)
+            tok_ids = jnp.concat(
+                (
+                    accepted_tokens,
+                    mismatch_token.reshape(cfg.inference_cfg.batch_size, -1),
+                ),
+                axis=-1,
+            )
+        else:
+            tok_ids = accepted_tokens
+
+        cur_pos += first_mismatch + 1
+
     return tok_ids, kvcache
 
 
@@ -101,3 +166,4 @@ et = time.time() - st
 toks_per_second = 20 / et
 print("new toks: ", enc.decode(list(generated_toks.flatten())))
 print("tok/s: ", toks_per_second)
+
