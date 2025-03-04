@@ -263,8 +263,8 @@ class Transformer(eqx.Module):
         mtp_keys = jax.random.split(key_mtp, cfg.n_mtp)
 
         self.tok_emb = init(key_emb, (cfg.n_vocab, cfg.dim))
-        self.blocks = eqx.filter_vmap(lambda k: Block(cfg, k))(block_keys)
-        self.mtp_blocks = eqx.filter_vmap(lambda k: MTPBlock(cfg, k))(mtp_keys)
+        self.blocks = [Block(cfg, k) for k in block_keys]
+        self.mtp_blocks = [MTPBlock(cfg, k) for k in mtp_keys]
         self.norm = RMSNorm(cfg)
         self.head = init(key_head, (cfg.dim, cfg.n_vocab))
 
@@ -273,23 +273,22 @@ class Transformer(eqx.Module):
     ) -> tuple[Array, Array]:
         emb = jnp.take(self.tok_emb, toks, axis=0)
 
-        def block_step(x: Array, block: Block) -> tuple[Array, Array]:
+        x = emb
+        affinities_block = []
+        for block in self.blocks:
             x, affinities = block(x, freqs_cis, mask)
-            return x, affinities
+            affinities_block.append(affinities)
 
-        x, affinities_block = jax.lax.scan(block_step, emb, self.blocks)  # type: ignore
+        preds_stack = [x]
+        affinities_mtp = []
+        for block in self.mtp_blocks:
+            next_rep, affinities = block(preds_stack[-1], emb, freqs_cis, mask)
+            preds_stack.append(next_rep)
+            affinities_mtp.append(affinities)
 
-        def mtp_step(
-            rep: Array, mtp_block: MTPBlock
-        ) -> tuple[Array, tuple[Array, Array]]:
-            next_rep, affinities = mtp_block(rep, emb, freqs_cis, mask)
-            return next_rep, (next_rep, affinities)
+        x = jnp.stack(preds_stack, axis=0)  # type: ignore
 
-        _, (preds_stack, affinities_mtp) = jax.lax.scan(mtp_step, x, self.mtp_blocks)  # type: ignore
-
-        x = jnp.concat([x[None, ...], preds_stack], axis=0)  # type: ignore
-
-        affinities = jnp.concat((affinities_block, affinities_mtp), axis=0)
+        affinities = jnp.stack((*affinities_block, *affinities_mtp), axis=0)
 
         x = self.norm(x)
         return einsum(x, self.head, "mtp b t d, d nv -> b t mtp nv"), affinities

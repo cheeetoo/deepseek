@@ -22,44 +22,41 @@ def get_partition(path: tuple[GetAttrKey, ...]) -> P:
             return P(AxisNames.tp, None)
         case "w":
             if "norm" in path[-2].name:
-                if len(path) == 2:
-                    return P(None)
-                else:
-                    return P(None, None)
+                return P(None)
             else:
-                return P(None, None, AxisNames.tp)
+                return P(None, AxisNames.tp)
         case "w_dkv":
-            return P(None, None, AxisNames.tp)
+            return P(None, AxisNames.tp)
         case "w_uk":
-            return P(None, None, AxisNames.tp, None)
+            return P(None, AxisNames.tp, None)
         case "w_uv":
-            return P(None, None, AxisNames.tp, None)
+            return P(None, AxisNames.tp, None)
         case "w_dq":
-            return P(None, None, AxisNames.tp)
+            return P(None, AxisNames.tp)
         case "w_uq":
-            return P(None, None, AxisNames.tp, None)
+            return P(None, AxisNames.tp, None)
         case "w_qr":
-            return P(None, None, AxisNames.tp, None)
+            return P(None, AxisNames.tp, None)
         case "w_kr":
-            return P(None, None, AxisNames.tp)
+            return P(None, AxisNames.tp)
         case "w_o":
-            return P(None, None, None, AxisNames.tp)
+            return P(None, None, AxisNames.tp)
         case "w1_shared":
-            return P(None, None, AxisNames.tp)
+            return P(None, AxisNames.tp)
         case "w2_shared":
-            return P(None, AxisNames.tp, None)
+            return P(AxisNames.tp, None)
         case "w3_shared":
-            return P(None, None, AxisNames.tp)
+            return P(None, AxisNames.tp)
         case "w1_routed":
-            return P(None, AxisNames.tp, None, None)
+            return P(AxisNames.tp, None, None)
         case "w2_routed":
-            return P(None, AxisNames.tp, None, None)
+            return P(AxisNames.tp, None, None)
         case "w3_routed":
-            return P(None, AxisNames.tp, None, None)
+            return P(AxisNames.tp, None, None)
         case "gate_b":
-            return P(None, None)
+            return P(None)
         case "proj":
-            return P(None, AxisNames.tp, None)
+            return P(AxisNames.tp, None)
         case "head":
             return P(AxisNames.tp, None)
         case _:

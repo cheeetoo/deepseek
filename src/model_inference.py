@@ -27,15 +27,19 @@ class KVCache(NamedTuple):
     def update(
         self, xk: jax.Array, xv: jax.Array, layer_idx: int, cur_pos: int, n_rep: int
     ):
+        n_toks = xk.shape[-2] + cur_pos
         ck = jax.lax.dynamic_update_slice(
-            self.k, jnp.bfloat16(xk[None, ...]), (layer_idx, 0, cur_pos, 0, 0)
+            self.k, jnp.bfloat16(xk[None, ...]), (layer_idx, 0, cur_pos, 0)
         )
-        cv = jax.lax.dynamic_update_slice(
-            self.kv, jnp.bfloat16(xv[None, ...]), (layer_idx, 0, cur_pos, 0, 0)
+        ckv = jax.lax.dynamic_update_slice(
+            self.kv, jnp.bfloat16(xv[None, ...]), (layer_idx, 0, cur_pos, 0)
         )
-        keys = repeat(ck[layer_idx], "b t drh -> b nh t drh", nh=n_rep) / n_rep
+        keys = (
+            repeat(ck[layer_idx, :, :n_toks], "b t drh -> b nh t drh", nh=n_rep) / n_rep
+        )
+        values = ckv[layer_idx, :, :n_toks]
 
-        return keys, cv[layer_idx], KVCache(k=ck, kv=cv)
+        return keys, values, KVCache(k=ck, kv=ckv)
 
 
 class IMLA(eqx.Module):
@@ -102,7 +106,7 @@ class IMLA(eqx.Module):
         logits = logits / jnp.sqrt(self.dh + self.drh) + mask
         scores = jax.nn.softmax(logits.astype(jnp.float32), -1).astype(h.dtype)
 
-        out = einsum(scores, v_c, "b nh t l, b nh t dh -> b nh l dh")
+        out = einsum(scores, v_c, "b nh t l, b nh l dh -> b nh t dh")
 
         return einsum(self.w_o, out, "d dh nh, b nh t dh -> b t d"), kvcache
 
@@ -244,14 +248,20 @@ class ITransformer(eqx.Module):
         for i, block in enumerate(self.blocks):
             x, kvcache = block(x, freqs_cis, mask, kvcache, i, cur_pos)
 
-        preds_stack = []
+        preds_stack = [x]
         for i, block in enumerate(self.mtp_blocks):
             next_rep, kvcache = block(
-                x, emb, freqs_cis, mask, kvcache, i + len(self.blocks) - 1, cur_pos
+                preds_stack[-1],
+                emb,
+                freqs_cis,
+                mask,
+                kvcache,
+                i + len(self.blocks) - 1,
+                cur_pos,
             )
             preds_stack.append(next_rep)
 
-        x = jnp.concat([x[None, ...], *preds_stack], axis=0)  # type: ignore
+        x = jnp.stack(preds_stack, axis=0)  # type: ignore
 
         x = self.norm(x)
         return einsum(x, self.head, "mtp b t d, d nv -> b t mtp nv"), kvcache

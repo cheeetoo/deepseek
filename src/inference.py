@@ -75,7 +75,7 @@ def sample_top_p(probs, p, key):
     return jnp.take_along_axis(idxs, sample, axis=-1)
 
 
-def generate(tok_ids, gen_len) -> jax.Array:
+def generate(tok_ids, gen_len, kvcache: KVCache) -> tuple[jax.Array, KVCache]:
     key = jax.random.PRNGKey(0)
     cur_pos = 0
 
@@ -91,14 +91,13 @@ def generate(tok_ids, gen_len) -> jax.Array:
         tok_ids = jnp.concat((tok_ids, next_token), axis=-1)
         key, _ = jax.random.split(key)
         cur_pos += n_toks
-    return tok_ids
+    return tok_ids, kvcache
 
 
 st = time.time()
-generated_toks = generate(tok_ids, 20)
+generated_toks, kvcache = generate(tok_ids, 20, kvcache)
 et = time.time() - st
 
 toks_per_second = 20 / et
-print(f"{tok_ids.shape=} {generated_toks.shape=}")
 print("new toks: ", enc.decode(list(generated_toks.flatten())))
 print("tok/s: ", toks_per_second)
